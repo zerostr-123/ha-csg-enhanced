@@ -16,6 +16,13 @@
 
 开发与验证环境：Home Assistant 2026.8.3；静态资源注册要求 2024.6 及以上。
 
+## 更新记录
+
+- **v1.5.2**：电费日历卡片在手机窄屏下改为按宽度自适应，7 列日历不再溢出/被裁切；
+  「本年累计」跟随翻页年份变化（翻到 2025 年显示 2025 年累计，标签同步）；
+  修正文档中 `entity` 示例为「本月用电量」`this_month_total_usage`，
+  并补全「卡片怎么加」的分步说明与常见问题。
+
 ## 功能
 
 | 组件 | 说明 |
@@ -38,38 +45,96 @@ HACS 并没有「官方商店上架」这一步：把本仓库推到 GitHub，�
 
 > 这是原集成的**替换版**（domain 相同）。请勿同时通过 HACS 安装原版，否则会互相覆盖。
 
-## 装完即用（无需手动复制文件）
+## 给使用者：怎么把日历卡片加到仪表盘
 
-静态资源随集成一起安装，由集成在启动时注册到 `/csg_stat`：
+> 这一步是在**下载并安装集成的那台 HA** 上操作，全程不用命令行，约 3 分钟。
+> 前提已完成：HACS 下载 → **重启 HA** → 设置 → 设备与服务 → 添加集成 → 扫码登录。
+> 只下载文件、不登录，是不会有实体和数据的。
 
-- **查询页**：浏览器打开 `http://<你的HA地址>/csg_stat/csg_daily_cost.html`
-- **卡片资源**：设置 → 仪表盘 → 右上角 → 资源 → 添加
-  `/csg_stat/csg-power-card.js`，类型选 **JavaScript 模块**
-  （YAML 模式则写 `url: /csg_stat/csg-power-card.js` + `type: module`）
+### 第 1 步：登记卡片资源（每台 HA 只需做一次）
 
-卡片配置示例（把 `<缴费号>` 换成自己的，或直接用任一集成实体）：
+设置 → 仪表盘 → 右上角 ⋮ → **资源**（Resources）→ **添加资源**：
+
+| 字段 | 填什么 |
+| --- | --- |
+| URL | `/csg_stat/csg-power-card.js` |
+| 资源类型 | **JavaScript 模块**（module） |
+
+保存后按 `Ctrl` + `F5` 强制刷新浏览器。若仪表盘是 YAML 模式
+（不是「由 Home Assistant 管理」），则在 `ui-lovelace.yaml` 顶层加：
+
+```yaml
+resources:
+  - url: /csg_stat/csg-power-card.js
+    type: module
+```
+
+> 资源用相对路径，换 HA 地址、HTTPS、手机 App 都不用改。
+> 若打开 `/csg_stat/csg-power-card.js` 是 404：多半是装完**没重启 HA**，或 HA 版本低于 2024.6。
+
+### 第 2 步：查自己的实体 ID
+
+开发者工具 → **状态** → 搜索框输入 `this_month_total_usage`，
+会看到形如 `sensor.1234567890123456_this_month_total_usage` 的实体（本月用电量），
+**把整串复制下来**。每个人的缴费号不同，不能直接照抄示例。
+
+> 注意：不要复制 `_this_year_total_usage`（本年累计）。填了它卡片会切成「年度视图」，
+> 日历变成 12 个月的格子、翻月按钮变灰，看不到每天的用电量。
+
+### 第 3 步：用「手动卡片」添加（最容易卡住的一步）
+
+这张卡片**没有图形配置界面，不会出现在「添加卡片」的卡片选择器里**，
+必须走 YAML 编辑器：
+
+1. 打开目标仪表盘 → 右上角 **编辑仪表盘** → **添加卡片**。
+2. 拉到列表最底部，选 **手动 / Manual**（部分版本叫「YAML 卡片编辑器」或「显示代码编辑器」）。
+3. 把下面整段粘进去，只把 `entity` 换成第 2 步复制的实体 ID：
 
 ```yaml
 type: custom:csg-power-card
-entity: sensor.<缴费号>_this_month_total_usage
+entity: sensor.1234567890123456_this_month_total_usage
+name: 南方电网电费日历
 ```
 
-多账户时可显式指定：
+4. 点 **保存**，再点右上角 **完成**。
+
+> `entity` **必填**：不写或写错，卡片会一直空白。卡片会自动从实体 ID 推出户号，
+> 配置里不需要写账号、密码或缴费号。
+> 兼容旧名称 `custom:custom-power-card-v47` / `custom:custom-power-card-v48`。
+
+### 第 4 步：等数据生成
+
+卡片读的是集成自动写入的 `/config/www/csg_daily_cost_history.json`。
+首次登录后会在后台逐月抓取历史（几分钟到十几分钟），期间显示「暂无数据」属正常；
+也可在开发者工具 → 操作里调用
+`china_southern_power_grid_stat.query_daily_cost` 触发一次抓取。
+
+查询页：`http://<你的HA地址>/csg_stat/csg_daily_cost.html`；
+卡片底部「详细信息」按钮默认就跳到这里，不用另外配置。
+
+### 可选参数
 
 ```yaml
 type: custom:csg-power-card
-entity: sensor.<缴费号>_this_year_total_usage
-account: <缴费号>
+entity: sensor.1234567890123456_this_month_total_usage
+account: 1234567890123456                        # 多账户时指定，单账户不用写
+detail_url: /csg_stat/csg_daily_cost.html        # 「详细信息」按钮目标
+tier_thresholds: [5, 10, 15, 20, 25]            # 日用电量 6 档色阶阈值（度）
+entity_prefix: sensor.1234567890123456_          # 实体命名特殊时手工指定前缀
 ```
 
-卡片可选参数：
+### 常见问题
 
-```yaml
-type: custom:csg-power-card
-entity: sensor.<缴费号>_this_month_total_usage
-detail_url: /csg_stat/csg_daily_cost.html   # 「详细信息」按钮目标，默认即此值
-tier_thresholds: [5, 10, 15, 20, 25]       # 日用电量色阶阈值（度），可选
-```
+| 现象 | 原因 / 处理 |
+| --- | --- |
+| 添加卡片里搜不到这张卡 | 正常，卡片无图形编辑器；按第 3 步选「手动 / Manual」 |
+| 卡片空白、只有标题 | `entity` 没填或填错；按第 2 步核对实体 ID |
+| 日历是 12 个月格子、看不到每天用电、翻月按钮是灰的 | `entity` 填成了 `_this_year_total_usage`；改成 `_this_month_total_usage` |
+| 查询页有每天耗电、卡片当月空白 | 当月日历读集成实体的本月每日明细，历史月份才读缓存 JSON；点「◀ 上月」能显示历史月即属当月尚未同步，等一次刷新或重启 |
+| 资源 404 | 装完没重启 HA，或 HA < 2024.6；重启后再试 |
+| 一直「暂无数据」 | 未完成扫码登录，或历史仍在后台抓取；等几分钟或调用 query_daily_cost |
+| 某些历史月份没数据 | 该月电网未返回每日日历，属数据源限制 |
+| 夏天整月偏橙红 | 南网按**绝对度数**分档，用电高属正常；可用 tier_thresholds 调整 |
 
 日历配色对齐南方电网小程序「智慧用电」，按**绝对日用电量**分 6 档固定色
 （不随当月最大/最小值浮动），色值取自官方 App 截图：
@@ -83,11 +148,10 @@ tier_thresholds: [5, 10, 15, 20, 25]       # 日用电量色阶阈值（度）�
 | 20–25 度 | 橙红 | `#E46435` |
 | ≥ 25 度 | 红 | `#DE472C` |
 
-> 兼容旧名称：仍可用 `custom:custom-power-card-v47` 或 `custom:custom-power-card-v48`。户号从 `entity` 自动推导，
-> 源码中没有任何硬编码账号。若 `/csg_stat` 无法访问（极旧版本 HA），可把
-> `custom_components/china_southern_power_grid_stat/www/` 下两个文件复制到 `/config/www/`，
-> 然后改用 `/local/csg_daily_cost.html` 与 `/local/csg-power-card.js`，
-> 并在卡片里加 `detail_url: /local/csg_daily_cost.html`。
+> 静态资源随集成一起安装，由集成在启动时注册到 `/csg_stat`，**无需手动往 `/config/www` 搬文件**。
+> 若 `/csg_stat` 无法访问（极旧版本 HA），可把 `custom_components/china_southern_power_grid_stat/www/`
+> 下两个文件复制到 `/config/www/`，然后改用 `/local/csg_daily_cost.html`
+> 与 `/local/csg-power-card.js`，并在卡片里加 `detail_url: /local/csg_daily_cost.html`。
 
 ## 数据在哪
 
