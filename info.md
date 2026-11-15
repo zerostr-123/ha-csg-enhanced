@@ -4,4 +4,7 @@
 Lovelace 日历卡片。安装后打开 `/csg_stat/csg_daily_cost.html` 即可查询。
 
 - 详细文档见 [README](https://github.com/zerostr-123/ha-csg-enhanced#readme)
+- 卡片添加步骤见 README「给使用者：怎么把日历卡片加到仪表盘」
 - 基于 linysky 的原集成，GPL-3.0
+
+> v1.5.2：卡片手机自适应 + 年度累计跟随年份，详见 README 更新记录。
