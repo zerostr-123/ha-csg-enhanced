@@ -1,8 +1,11 @@
 /**
- * 南方电网电费卡片（HACS 分享版，基于 v48）
+ * 南方电网电费卡片（HACS 分享版 v1.5.2，基于 v49 自适应版）
  * 读取集成生成的每日电费缓存，可查询全部历史月份；
  * 日历配色对齐南网小程序的 6 档绝对用电量色阶；
  * 底部「详细信息」按钮直达查询页；户号从卡片配置自动推导，不含硬编码账号。
+ * 年度累计随翻页年份变化（翻到 2025 年即显示 2025 年累计）。
+ * v1.5.2：手机窄屏下 7 列日历按卡片宽度自适应，不再被裁切；
+ *         年度累计在窄卡片上分两行完整显示。
  */
 // Same-origin relative URL: works from any HA address, contains no private IP.
 // The HACS build replaces this with /csg_stat/csg_daily_cost.html.
@@ -51,124 +54,164 @@ const CSGPowerCard = class extends HTMLElement {
     
     this.shadowRoot.innerHTML = `
       <style>
-        :host{display:block}
-        *{box-sizing:border-box;margin:0;padding:0}
-        .card{border-radius:24px;overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.12);transition:transform .2s;font-family:-apple-system,'PingFang SC',sans-serif;background:linear-gradient(135deg,#1a237e,#283593);cursor:pointer}
-        .card:hover{transform:scale(1.01)}
-        
-        /* 折叠相关 */
+        /* v49 自适应：所有内边距 / 字号 / 间距按卡片实际宽度等比缩放，
+           任何宽度下 7 列日历都完整落在卡片内，不会被 overflow:hidden 裁掉。 */
+        :host{
+          display:block;width:100%;max-width:100%;min-width:0;
+          --csg-w:420px; /* JS ResizeObserver 会用实测宽度覆盖 */
+          --p:min(24px,calc(var(--csg-w)*.058));
+          --p2:min(16px,calc(var(--csg-w)*.040));
+          --g:min(16px,calc(var(--csg-w)*.038));
+          --g4:min(4px,calc(var(--csg-w)*.010));
+          --g8:min(8px,calc(var(--csg-w)*.020));
+          --f9:min(9px,calc(var(--csg-w)*.022));
+          --f10:min(10px,calc(var(--csg-w)*.0245));
+          --f11:min(11px,calc(var(--csg-w)*.027));
+          --f12:min(12px,calc(var(--csg-w)*.029));
+          --f13:min(13px,calc(var(--csg-w)*.032));
+          --f14:min(14px,calc(var(--csg-w)*.034));
+          --f16:min(16px,calc(var(--csg-w)*.039));
+          --f18:min(18px,calc(var(--csg-w)*.044));
+          --f20:min(20px,calc(var(--csg-w)*.049));
+          --f28:min(28px,calc(var(--csg-w)*.068));
+          --rad:min(24px,calc(var(--csg-w)*.058));
+          --rad2:min(16px,calc(var(--csg-w)*.039));
+          --rad3:min(12px,calc(var(--csg-w)*.029));
+          --rad4:min(8px,calc(var(--csg-w)*.020));
+        }
+        *{box-sizing:border-box;margin:0;padding:0;min-width:0}
+        .card{border-radius:var(--rad);overflow:hidden;box-shadow:0 6px 24px rgba(0,0,0,.12);
+          transition:box-shadow .2s;font-family:-apple-system,'PingFang SC',sans-serif;
+          background:linear-gradient(135deg,#1a237e,#283593);cursor:pointer;
+          width:100%;max-width:100%}
+        .card:hover{box-shadow:0 8px 30px rgba(0,0,0,.22)} /* 不再 scale，避免窄屏被裁 */
+
+        /* 折叠状态 */
         .card.expanded{cursor:default}
-        .collapsed-content{display:flex;align-items:center;justify-content:space-between;padding:16px 20px}
-        .collapsed-metrics{display:flex;gap:20px;flex:1;justify-content:space-around}
-        .collapsed-metric{text-align:center;flex:1}
-        .collapsed-value{font-size:18px;font-weight:600;color:white}
-        .collapsed-label{font-size:10px;color:rgba(255,255,255,.5);margin-top:2px}
-        .collapsed-icon{font-size:20px;color:rgba(255,255,255,.6);display:block;margin:0 auto 4px}
-        
+        .collapsed-content{display:flex;align-items:center;justify-content:space-between;
+          padding:var(--p2) var(--p);min-width:0}
+        .collapsed-metrics{display:flex;gap:var(--g8);flex:1 1 0;min-width:0;justify-content:space-around}
+        .collapsed-metric{text-align:center;flex:1 1 0;min-width:0}
+        .collapsed-value{font-size:var(--f18);font-weight:600;color:white;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .collapsed-label{font-size:var(--f10);color:rgba(255,255,255,.5);margin-top:2px;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .collapsed-icon{font-size:var(--f20);color:rgba(255,255,255,.6);display:block;margin:0 auto 4px}
+
         /* 展开内容 */
         .expanded-content{display:none}
         .card.expanded .collapsed-content{display:none}
         .card.expanded .expanded-content{display:block}
-        
-        .header{padding:20px 24px 16px;color:white;position:relative;overflow:hidden}
-        .header::before{content:'';position:absolute;right:-20px;top:-20px;width:120px;height:120px;background:rgba(255,255,255,.08);border-radius:50%}
-        .header::after{content:'';position:absolute;right:30px;bottom:-30px;width:80px;height:80px;background:rgba(255,255,255,.05);border-radius:50%}
-        .title{display:flex;align-items:center;justify-content:space-between;position:relative;z-index:1}
-        .title-left{display:flex;align-items:center;gap:10px}
-        .icon{font-size:28px}
-        .title-text{font-size:16px;font-weight:600;opacity:.95}
-        .subtitle{font-size:12px;opacity:.7;margin-top:2px}
-        .collapse-btn{font-size:20px;color:rgba(255,255,255,.6);cursor:pointer;padding:4px}
+
+        .header{padding:var(--p) var(--p) var(--p2);color:white;position:relative;overflow:hidden}
+        .header::before{content:'';position:absolute;right:0;top:-30px;
+          width:min(120px,calc(var(--csg-w)*.30));height:min(120px,calc(var(--csg-w)*.30));
+          background:rgba(255,255,255,.08);border-radius:50%}
+        .header::after{content:'';position:absolute;right:var(--p2);bottom:-30px;
+          width:min(80px,calc(var(--csg-w)*.20));height:min(80px,calc(var(--csg-w)*.20));
+          background:rgba(255,255,255,.05);border-radius:50%}
+        .title{display:flex;align-items:center;justify-content:space-between;gap:var(--g8);position:relative;z-index:1;min-width:0}
+        .title-left{display:flex;align-items:center;gap:var(--g8);min-width:0}
+        .icon{font-size:var(--f28);flex:0 0 auto}
+        .title-text{font-size:var(--f16);font-weight:600;opacity:.95;white-space:nowrap}
+        .subtitle{font-size:var(--f12);opacity:.7;margin-top:2px;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .collapse-btn{font-size:var(--f20);color:rgba(255,255,255,.6);cursor:pointer;padding:var(--g4);flex:0 0 auto}
         .collapse-btn:hover{color:white}
-        .main{padding:0 24px 20px;position:relative;z-index:1}
-        
-        /* 翻页按钮 - 分散对齐 */
-        .page-nav{display:flex;gap:8px;margin-top:12px;justify-content:space-between}
-        .page-btn{background:rgba(255,255,255,.1);border:none;border-radius:8px;padding:8px 16px;color:white;font-size:12px;cursor:pointer;transition:background .2s;flex:0 0 auto}
+        .main{padding:0 var(--p) var(--p);position:relative;z-index:1;min-width:0}
+
+        /* 翻页按钮 */
+        .page-nav{display:flex;gap:var(--g8);margin-top:var(--f12);justify-content:space-between;min-width:0}
+        .page-btn{background:rgba(255,255,255,.1);border:none;border-radius:var(--rad4);
+          padding:var(--g8) min(10px,calc(var(--csg-w)*.024));color:white;font-size:var(--f12);
+          cursor:pointer;transition:background .2s;flex:1 1 0;min-width:0;
+          white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .page-btn:hover{background:rgba(255,255,255,.2)}
         .page-btn:disabled{opacity:.3;cursor:not-allowed}
-        #current-month{flex:1;margin:0 8px}
-        
+        #current-month{flex:1 1 0;margin:0 var(--g4)}
+
         /* 双指标 */
-        .metrics{display:flex;gap:16px;margin-bottom:16px}
-        .metric{flex:1;background:rgba(255,255,255,.1);border-radius:16px;padding:16px;text-align:center}
-        .metric-label{font-size:11px;color:rgba(255,255,255,.6);display:flex;align-items:center;justify-content:center;gap:6px}
-        .metric-icon{font-size:14px}
-        .metric-value{font-size:18px;font-weight:600;color:white;margin-top:4px;white-space:nowrap;text-align:center;display:block}
-        .metric-unit{font-size:11px;font-weight:400;opacity:.7;margin-left:1px}
-        
+        .metrics{display:flex;gap:var(--g);margin-bottom:var(--g);min-width:0}
+        .metric{flex:1 1 0;min-width:0;background:rgba(255,255,255,.1);border-radius:var(--rad2);
+          padding:var(--p2) min(6px,calc(var(--csg-w)*.015));text-align:center}
+        .metric-label{font-size:var(--f11);color:rgba(255,255,255,.6);display:flex;
+          align-items:center;justify-content:center;gap:min(6px,calc(var(--csg-w)*.015));white-space:nowrap}
+        .metric-icon{font-size:var(--f14)}
+        .metric-value{font-size:var(--f18);font-weight:600;color:white;margin-top:4px;
+          text-align:center;display:block;white-space:normal;overflow-wrap:anywhere;line-height:1.2}
+        /* 年累计：宽屏单行「3080度/2070元」，窄屏竖排两行，数字完整不截断 */
+        #year-info{white-space:nowrap;letter-spacing:-.3px}
+        .yi-sep{opacity:.55;margin:0 1px}
+        :host([csg-narrow]) #year-info{font-size:clamp(11px,calc(var(--csg-w)*.036),15px);line-height:1.25}
+        :host([csg-narrow]) #year-info .yi{display:block}
+        :host([csg-narrow]) #year-info .yi-sep{display:none}
+        .metric-unit{font-size:var(--f11);font-weight:400;opacity:.7;margin-left:1px}
+
         /* 对比 */
-        .compare-row{display:flex;align-items:center;gap:8px;margin-bottom:16px;font-size:13px;color:rgba(255,255,255,.8)}
-        .compare-tag{padding:4px 10px;border-radius:20px;font-size:11px;font-weight:500}
+        .compare-row{display:flex;align-items:center;gap:var(--g8);margin-bottom:var(--g);
+          font-size:var(--f13);color:rgba(255,255,255,.8);flex-wrap:wrap;min-width:0}
+        .compare-tag{padding:var(--g4) min(10px,calc(var(--csg-w)*.024));border-radius:20px;
+          font-size:var(--f11);font-weight:500;white-space:nowrap}
         .compare-tag.up{background:rgba(255,138,128,.2);color:#ff8a80}
         .compare-tag.down{background:rgba(105,240,174,.2);color:#69f0ae}
-        
-        /* 日历 */
-        .calendar-area{background:rgba(255,255,255,.08);border-radius:16px;padding:16px;margin-top:8px}
-        .calendar-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
-        .calendar-title{font-size:13px;font-weight:600;color:rgba(255,255,255,.9)}
-        
-        .weekday-row{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-bottom:4px}
-        .weekday{font-size:10px;color:rgba(255,255,255,.4);text-align:center;padding:4px 0}
-        
-        .calendar-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
-        
-        .day-cell{aspect-ratio:1;border-radius:8px;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:56px;padding:3px 2px;line-height:1.25}
+
+        /* 日历：minmax(0,1fr) 是关键，禁止格子把列撑宽 */
+        .calendar-area{background:rgba(255,255,255,.08);border-radius:var(--rad2);
+          padding:var(--p2);margin-top:var(--g8);min-width:0;overflow:hidden}
+        .calendar-header{display:flex;justify-content:space-between;align-items:center;
+          margin-bottom:var(--f12);min-width:0}
+        .calendar-title{font-size:var(--f13);font-weight:600;color:rgba(255,255,255,.9)}
+        .weekday-row{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:var(--g4);margin-bottom:var(--g4)}
+        .weekday{font-size:var(--f10);color:rgba(255,255,255,.4);text-align:center;padding:var(--g4) 0}
+        .calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:var(--g4)}
+        .day-cell{aspect-ratio:1/1;min-width:0;min-height:0;border-radius:var(--rad4);
+          display:flex;flex-direction:column;align-items:center;justify-content:center;
+          padding:2px 1px;line-height:1.15;overflow:hidden}
         .day-cell.empty{background:transparent}
         .day-cell.future{background:rgba(255,255,255,.04);border:1px dashed rgba(255,255,255,.1)}
-        
-        .day-num{font-size:10px;font-weight:500;color:rgba(255,255,255,.6)}
-        .day-kwh{font-size:10px;font-weight:600;color:rgba(255,255,255,.92);margin-top:1px}
-        .day-cost{font-size:10px;font-weight:600;color:white;margin-top:2px}
-        
-        /* 南网小程序「智慧用电」日用电量色阶：按绝对度数 0/5/10/15/20/25 分 6 档 */
+        .day-num{font-size:var(--f9);font-weight:500;color:rgba(255,255,255,.6);white-space:nowrap}
+        .day-kwh{font-size:var(--f10);font-weight:600;color:rgba(255,255,255,.92);margin-top:1px;white-space:nowrap;letter-spacing:-.2px}
+        .day-cost{font-size:var(--f10);font-weight:600;color:white;margin-top:2px;white-space:nowrap;letter-spacing:-.2px}
+
+        /* 南网小程序「智慧用电」日用电量色阶：绝对度数 0/5/10/15/20/25 共 6 档 */
         .day-cell.level-0{background:#7AEB81!important}
         .day-cell.level-1{background:#A6E065!important}
         .day-cell.level-2{background:#F7D04F!important}
         .day-cell.level-3{background:#EA8D3D!important}
         .day-cell.level-4{background:#E46435!important}
         .day-cell.level-5{background:#DE472C!important}
-        /* 亮色块上使用深色文字，与南网小程序一致 */
         .day-cell[class*="level-"] .day-num{color:rgba(18,42,18,.72)!important}
         .day-cell[class*="level-"] .day-cost,
         .day-cell[class*="level-"] .day-kwh{color:#17251a!important}
-        
-        /* 底部统计 - 新布局 */
-        .stats{display:flex;gap:8px;margin-top:16px}
-        
-        /* 左侧 - 当前阶梯（调整到最左边） */
-        .stat-left{flex:1;background:rgba(255,255,255,.06);border-radius:12px;padding:12px}
-        .tier-header{font-size:10px;color:rgba(255,255,255,.5);margin-bottom:4px}
-        .tier-current{font-size:13px;font-weight:600;color:#69f0ae;margin-bottom:2px}
-        .tier-info{font-size:10px;color:rgba(255,255,255,.7);white-space:nowrap}
+
+        /* 底部统计 */
+        .stats{display:flex;gap:var(--g8);margin-top:var(--g);flex-wrap:wrap;min-width:0}
+        .stat-left,.stat-mid,.stat-right{flex:1 1 0;min-width:0;background:rgba(255,255,255,.06);
+          border-radius:var(--rad3);padding:var(--f12)}
+        .tier-header,.stat-mid-title,.peak-title{font-size:var(--f10);color:rgba(255,255,255,.5);margin-bottom:4px}
+        .tier-current{font-size:var(--f13);font-weight:600;color:#69f0ae;margin-bottom:2px}
+        .tier-info{font-size:var(--f10);color:rgba(255,255,255,.7);white-space:normal;overflow-wrap:anywhere;line-height:1.35}
         .tier-info span{color:rgba(255,255,255,.5)}
-        
-        /* 中间 - 日均 */
-        .stat-mid{flex:1;background:rgba(255,255,255,.06);border-radius:12px;padding:12px}
-        .stat-mid-title{font-size:10px;color:rgba(255,255,255,.5);margin-bottom:4px}
-        .stat-mid-row{display:flex;justify-content:space-between;margin-top:4px}
-        .stat-mid-item{text-align:center;flex:1}
-        .stat-mid-label{font-size:9px;color:rgba(255,255,255,.4)}
-        .stat-mid-value{font-size:14px;font-weight:600;color:white}
-        
-        /* 右侧 - 峰值日 */
-        .stat-right{flex:1;background:rgba(255,255,255,.06);border-radius:12px;padding:12px}
-        .peak-title{font-size:10px;color:rgba(255,255,255,.5);margin-bottom:4px}
-        .peak-row{display:flex;justify-content:space-between}
-        .peak-item{text-align:center;flex:1}
-        .peak-label{font-size:9px;color:rgba(255,255,255,.4)}
-        .peak-value{font-size:14px;font-weight:600;color:white}
-        
-        /* 图例 - 与南网小程序一致：色阶 + 度数刻度 */
-        .legend{display:flex;align-items:flex-end;gap:8px;margin-top:12px;font-size:10px;color:rgba(255,255,255,.5)}
-        .legend-main{flex:1}
-        .legend-bar{display:flex;gap:2px}
-        .legend-block{flex:1;height:12px;border-radius:2px}
-        .legend-ticks{display:flex;justify-content:space-between;margin-top:3px;font-size:9px;color:rgba(255,255,255,.45)}
-        .legend-unit{flex:0 0 auto;padding-bottom:14px}
-        
-        .footer{padding:12px 24px 16px;display:flex;justify-content:space-between;align-items:center;font-size:11px;color:rgba(255,255,255,.4)}
-        .detail-btn{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.24);border-radius:999px;padding:6px 14px;color:#fff;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;transition:background .2s,transform .2s}
+        .stat-mid-row,.peak-row{display:flex;justify-content:space-between;margin-top:4px;min-width:0}
+        .stat-mid-item,.peak-item{text-align:center;flex:1 1 0;min-width:0}
+        .stat-mid-label,.peak-label{font-size:var(--f9);color:rgba(255,255,255,.4)}
+        .stat-mid-value,.peak-value{font-size:var(--f14);font-weight:600;color:white;white-space:nowrap}
+
+        /* 图例 */
+        .legend{display:flex;align-items:flex-end;gap:var(--g8);margin-top:var(--f12);
+          font-size:var(--f10);color:rgba(255,255,255,.5);min-width:0}
+        .legend-main{flex:1 1 0;min-width:0}
+        .legend-bar{display:flex;gap:2px;min-width:0}
+        .legend-block{flex:1 1 0;min-width:0;height:min(12px,calc(var(--csg-w)*.03));border-radius:2px}
+        .legend-ticks{display:flex;justify-content:space-between;margin-top:3px;font-size:var(--f9);color:rgba(255,255,255,.45)}
+        .legend-unit{flex:0 0 auto;padding-bottom:14px;white-space:nowrap}
+
+        .footer{padding:var(--f12) var(--p) var(--p2);display:flex;justify-content:space-between;
+          align-items:center;gap:var(--g8);flex-wrap:wrap;font-size:var(--f11);
+          color:rgba(255,255,255,.4);min-width:0}
+        .detail-btn{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.24);
+          border-radius:999px;padding:6px 14px;color:#fff;font-size:var(--f11);font-weight:600;
+          cursor:pointer;font-family:inherit;white-space:nowrap;transition:background .2s,transform .2s}
         .detail-btn:hover{background:rgba(255,255,255,.28);transform:translateY(-1px)}
         .detail-btn:active{transform:translateY(0)}
       </style>
@@ -190,7 +233,7 @@ const CSGPowerCard = class extends HTMLElement {
             <div class="collapsed-metric">
               <div class="collapsed-icon">📅</div>
               <div class="collapsed-value" id="col-year">--</div>
-              <div class="collapsed-label">本年累计</div>
+              <div class="collapsed-label" id="col-year-label">本年累计</div>
             </div>
           </div>
           <div style="font-size:20px;color:rgba(255,255,255,.6)">▼</div>
@@ -367,6 +410,76 @@ const CSGPowerCard = class extends HTMLElement {
       this._viewMonthOffset = 0;
       this._update();
     });
+
+    // v1.5.2：按卡片实测宽度驱动 CSS 缩放变量，7 列日历任何宽度都完整显示
+    this._fit = () => {
+      const w = this.getBoundingClientRect().width || 420;
+      this.style.setProperty('--csg-w', Math.round(w) + 'px');
+      this.toggleAttribute('csg-narrow', w < 460);
+    };
+    this._fit();
+    if (typeof ResizeObserver !== 'undefined') {
+      this._ro = new ResizeObserver(() => this._fit());
+      this._ro.observe(this);
+    } else {
+      window.addEventListener('resize', this._fit);
+    }
+  }
+
+  connectedCallback() {
+    if (this._ro) this._ro.observe(this);
+    if (this._fit) this._fit();
+  }
+  disconnectedCallback() { if (this._ro) this._ro.disconnect(); }
+
+  // 按当前查看年份汇总年度累计（电量 + 阶梯估算电费）
+  // 数据源：集成实体的 history_by_month（跨年全部账单月份），不依赖具体户号。
+  _refreshYearInfo(viewYear) {
+    const sr = this.shadowRoot;
+    if (!sr) return;
+    const y = Number(viewYear);
+    const isThisYear = (y === new Date().getFullYear());
+    const label = isThisYear ? '本年累计' : y + '年累计';
+    const set = (id, text) => { const el = sr.getElementById(id); if (el) el.textContent = text; };
+    set('year-label', label);
+    set('col-year-label', label);
+
+    const states = (this._hass && this._hass.states) || {};
+    let months = null, official = 0;
+    for (const id of Object.keys(states)) {
+      const a = states[id].attributes || {};
+      if (id.indexOf('_this_year_total_usage') >= 0 && Array.isArray(a.history_by_month)) {
+        months = a.history_by_month;
+        official = parseFloat(states[id].state) || 0;
+        break;
+      }
+    }
+    if (!months) {
+      for (const id of Object.keys(states)) {
+        const a = states[id].attributes || {};
+        if (Array.isArray(a.this_year_by_month)) { months = a.this_year_by_month; break; }
+      }
+    }
+
+    const prefix = y + '-';
+    const rows = (months || []).filter(m => String(m.month || '').indexOf(prefix) === 0);
+    let kwh = 0, cost = 0;
+    for (const m of rows) {
+      const k = Number(m.kwh) || 0;
+      if (k <= 0) continue;
+      kwh += k;
+      const monthNum = parseInt(String(m.month).split('-')[1], 10) || 1;
+      cost += this._calcTierForMonth(k, monthNum);
+    }
+    if (isThisYear && official > kwh) kwh = official;
+    const has = rows.length > 0 || (isThisYear && kwh > 0);
+    const yi = this.shadowRoot.getElementById('year-info');
+    if (yi) yi.innerHTML = has
+      ? '<span class="yi">' + kwh.toFixed(0) + '度</span>' +
+        '<span class="yi-sep">/</span>' +
+        '<span class="yi">' + cost.toFixed(0) + '元</span>'
+      : '<span class="yi">--</span>';
+    set('col-year', has ? cost.toFixed(0) + '元' : '--');
   }
 
   _update() {
@@ -387,6 +500,9 @@ const CSGPowerCard = class extends HTMLElement {
     const viewYear = viewDate.getFullYear();
     const viewMonth = viewDate.getMonth() + 1;
     const monthNames = ['','1','2','3','4','5','6','7','8','9','10','11','12'];
+
+    // 年度累计只看当前翻到的年份（历史月份分支 return 之前先刷新）
+    this._refreshYearInfo(viewYear);
     
     // 是否是查看历史月份
     const isViewingPast = this._viewMonthOffset < 0;
@@ -457,26 +573,7 @@ const CSGPowerCard = class extends HTMLElement {
     this.shadowRoot.getElementById('col-cost').textContent = totalCost.toFixed(0) + '元';
     this.shadowRoot.getElementById('col-kwh').textContent = totalKwh.toFixed(0) + '度';
     
-    // 年度累计
-    const yearUsageEntity = this._hass.states[p + 'this_year_total_usage'];
-    const yearKwh = parseFloat(yearUsageEntity?.state) || 0;
-    const yearMonthlyData = yearUsageEntity?.attributes?.this_year_by_month || [];
-    
-    let yearCost = 0;
-    if (yearMonthlyData.length > 0) {
-      yearMonthlyData.forEach(m => {
-        const monthKwh = m.kwh || 0;
-        const monthStr = m.month || '';
-        const monthNum = parseInt(monthStr.split('-')[1]) || 1;
-        if (monthKwh > 0) {
-          yearCost += this._calcTierForMonth(monthKwh, monthNum);
-        }
-      });
-    }
-    
-    const yearInfoText = yearKwh.toFixed(0) + '度/' + yearCost.toFixed(0) + '元';
-    this.shadowRoot.getElementById('year-info').innerHTML = yearInfoText;
-    this.shadowRoot.getElementById('col-year').textContent = yearCost.toFixed(0) + '元';
+    // 年度累计由 _refreshYearInfo(viewYear) 按查看年份统一更新
     
     // 日均对比 - 只在当前月份时显示
     const compareEl = this.shadowRoot.getElementById('compare');
