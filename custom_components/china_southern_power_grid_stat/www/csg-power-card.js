@@ -6,10 +6,24 @@
  * 年度累计随翻页年份变化（翻到 2025 年即显示 2025 年累计）。
  * v1.5.2：手机窄屏下 7 列日历按卡片宽度自适应，不再被裁切；
  *         年度累计在窄卡片上分两行完整显示。
+ * v1.5.3：兼容被改成中文 / 拼音的 entity_id —— 按注册表原名与集成属性
+ *         自动定位数据源，卡片配置里的旧 ID 失效时也能自动回退。
  */
 // Same-origin relative URL: works from any HA address, contains no private IP.
 // The HACS build replaces this with /csg_stat/csg_daily_cost.html.
 const DEFAULT_DETAIL_URL = '/csg_stat/csg_daily_cost.html';
+
+// 集成创建实体时使用的英文后缀（对应 const.py 里的 SUFFIX_*）。
+// entity_id 允许被用户改成拼音 / 中文，所以不能只靠拼 ID 找实体。
+const CSG_SUFFIXES = [
+  'balance', 'arrears', 'yesterday_kwh',
+  'latest_day_kwh', 'latest_day_cost',
+  'this_year_total_usage', 'this_year_total_cost',
+  'this_month_total_usage', 'this_month_total_cost',
+  'current_ladder', 'current_ladder_remaining_kwh', 'current_ladder_tariff',
+  'last_year_total_usage', 'last_year_total_cost',
+  'last_month_total_usage', 'last_month_total_cost'
+];
 console.log('[csg-power-card] loading...');
 const CSGPowerCard = class extends HTMLElement {
   set hass(hass) {
@@ -23,6 +37,89 @@ const CSGPowerCard = class extends HTMLElement {
 
   // Account number is derived from the configured entity (or given explicitly),
   // so the same card works for every installation without editing the source.
+
+  // ---- v1.5.3 实体自动定位 -------------------------------------------
+  // 按「注册表原名 / 显示名 / ID 英文后缀」和「集成独有属性 + device_class」
+  // 建立 英文后缀 -> 实际 entity_id 的索引；多账户时优先同一设备 / 同一户号。
+  _suffixIndex() {
+    const states = (this._hass && this._hass.states) || {};
+    if (this._idxStates === states) return this._idxCache;
+    const reg = (this._hass && this._hass.entities) || {};
+    const cfg = this._config || {};
+    const eid = cfg.entity || '';
+    const device = reg[eid] && reg[eid].device_id;
+    const acct = (String(eid).match(/\d{6,}/) || [''])[0];
+    const best = {};
+    const put = (suffix, id, base) => {
+      if (!id || !states[id]) return;
+      let score = base;
+      if (device && reg[id] && reg[id].device_id === device) score += 8;
+      if (acct && id.indexOf(acct) >= 0) score += 4;
+      if (!best[suffix] || score > best[suffix].score) best[suffix] = { id, score };
+    };
+    // 1) 正常安装：ID / 注册表原名 / 显示名里就带英文后缀，最精确
+    for (const id of Object.keys(states)) {
+      if (id.indexOf('sensor.') !== 0) continue;
+      const a = states[id].attributes || {};
+      const e = reg[id] || {};
+      const names = [e.original_name, e.name, a.friendly_name, id]
+        .filter(Boolean).map(String);
+      for (const suffix of CSG_SUFFIXES) {
+        if (names.some(n => n === suffix || n.endsWith('_' + suffix) || n.endsWith(' ' + suffix))) {
+          put(suffix, id, 30);
+          break;
+        }
+      }
+    }
+    // 2) 被改名成拼音 / 中文：靠集成写进属性的独有明细数组来认
+    for (const id of Object.keys(states)) {
+      const a = states[id].attributes || {};
+      const isCost = a.device_class === 'monetary';
+      if (Array.isArray(a.this_month_by_day))
+        put(isCost ? 'this_month_total_cost' : 'this_month_total_usage', id, 20);
+      if (Array.isArray(a.last_month_by_day))
+        put(isCost ? 'last_month_total_cost' : 'last_month_total_usage', id, 20);
+      if (Array.isArray(a.this_year_by_month) || Array.isArray(a.history_by_month))
+        put('this_year_total_usage', id, 20);
+      if (Array.isArray(a.last_year_by_month)) put('last_year_total_usage', id, 20);
+      if (a.current_ladder_start_date) put('current_ladder', id, 20);
+      if (a.latest_day_date) put(isCost ? 'latest_day_cost' : 'latest_day_kwh', id, 20);
+    }
+    const out = {};
+    for (const k of Object.keys(best)) out[k] = best[k].id;
+    this._idxStates = states;
+    this._idxCache = out;
+    return out;
+  }
+
+  // 该实体在集成里的角色（英文后缀），用来判断年度 / 上年视图。
+  _roleOf(id) {
+    const s = ((this._hass && this._hass.states) || {})[id];
+    if (!s) return '';
+    const a = s.attributes || {};
+    const e = ((this._hass && this._hass.entities) || {})[id] || {};
+    const names = [e.original_name, e.name, a.friendly_name, id]
+      .filter(Boolean).map(String);
+    for (const suffix of CSG_SUFFIXES) {
+      if (names.some(n => n === suffix || n.endsWith('_' + suffix) || n.endsWith(' ' + suffix)))
+        return suffix;
+    }
+    if (Array.isArray(a.this_year_by_month) || Array.isArray(a.history_by_month))
+      return 'this_year_total_usage';
+    if (Array.isArray(a.this_month_by_day))
+      return a.device_class === 'monetary' ? 'this_month_total_cost' : 'this_month_total_usage';
+    return '';
+  }
+
+  // 先按 v1.5.2 的老路径直取，取不到再走自动索引。
+  _state(suffix) {
+    const states = (this._hass && this._hass.states) || {};
+    const direct = states[this._entityPrefix() + suffix];
+    if (direct) return direct;
+    const id = this._suffixIndex()[suffix];
+    return id ? states[id] : undefined;
+  }
+
   _entityPrefix() {
     const cfg = this._config || {};
     if (cfg.entity_prefix) return cfg.entity_prefix;
@@ -30,6 +127,13 @@ const CSGPowerCard = class extends HTMLElement {
     const eid = cfg.entity || '';
     const m = eid.match(/^(sensor\..+?)_(?:this_year|last_year|this_month|last_month|latest_day|yesterday|current_ladder|balance|arrears)/);
     if (m) return m[1] + '_';
+    // v1.5.3：ID 被改成拼音时，从同一账户里仍是英文 ID 的实体反推前缀
+    const idx = this._suffixIndex();
+    for (const suffix of Object.keys(idx)) {
+      const id = idx[suffix];
+      if (typeof id === 'string' && id.endsWith('_' + suffix))
+        return id.slice(0, id.length - suffix.length);
+    }
     const found = Object.keys((this._hass && this._hass.states) || {})
       .find(k => k.startsWith('sensor.') && k.endsWith('_this_year_total_usage'));
     return found ? found.slice(0, -'this_year_total_usage'.length) : 'sensor.';
@@ -446,22 +550,26 @@ const CSGPowerCard = class extends HTMLElement {
 
     const states = (this._hass && this._hass.states) || {};
     let months = null, official = 0;
-    for (const id of Object.keys(states)) {
-      const a = states[id].attributes || {};
-      if (id.indexOf('_this_year_total_usage') >= 0 && Array.isArray(a.history_by_month)) {
-        months = a.history_by_month;
-        official = parseFloat(states[id].state) || 0;
-        break;
-      }
+    const yEnt = this._state('this_year_total_usage');
+    if (yEnt) {
+      const ya = yEnt.attributes || {};
+      months = Array.isArray(ya.history_by_month) ? ya.history_by_month
+        : (Array.isArray(ya.this_year_by_month) ? ya.this_year_by_month : null);
+      official = parseFloat(yEnt.state) || 0;
     }
     if (!months) {
       for (const id of Object.keys(states)) {
         const a = states[id].attributes || {};
-        if (Array.isArray(a.this_year_by_month)) { months = a.this_year_by_month; break; }
+        if (Array.isArray(a.history_by_month) || Array.isArray(a.this_year_by_month)) {
+          months = a.history_by_month || a.this_year_by_month;
+          official = parseFloat(states[id].state) || 0;
+          break;
+        }
       }
     }
 
     const prefix = y + '-';
+
     const rows = (months || []).filter(m => String(m.month || '').indexOf(prefix) === 0);
     let kwh = 0, cost = 0;
     for (const m of rows) {
@@ -483,16 +591,18 @@ const CSGPowerCard = class extends HTMLElement {
   }
 
   _update() {
-    if (!this._config?.entity) return;
+    const cfg = this._config || {};
+    const states = (this._hass && this._hass.states) || {};
+    let mainId = cfg.entity;
+    // v1.5.3：卡片配置里的 ID 已失效（实体被改成拼音 / 中文）时自动定位本月用电量实体
+    if (!mainId || !states[mainId]) mainId = this._suffixIndex()['this_month_total_usage'] || mainId;
+    if (!mainId || !states[mainId]) return;
     const p = this._entityPrefix();
-    
-    const entity = this._hass.states[this._config.entity];
-    if (!entity) return;
 
-    // 根据实体ID判断是月报还是年报
-    const entityId = this._config.entity;
-    const isYearly = entityId.includes('this_year');
-    const isLastYear = entityId.includes('last_year');
+    // 按「集成里的角色」判断月报 / 年报，不再只看 ID 字符串
+    const role = this._roleOf(mainId);
+    const isYearly = role.indexOf('this_year') === 0 || mainId.includes('this_year');
+    const isLastYear = role.indexOf('last_year') === 0 || mainId.includes('last_year');
     
     // 计算要显示的月份（考虑翻页）
     const now = new Date();
@@ -533,13 +643,13 @@ const CSGPowerCard = class extends HTMLElement {
     let costEntity, usageEntity, lastPeriodCost;
     
     if (isYearly) {
-      costEntity = this._hass.states[p + 'this_year_total_cost'];
-      usageEntity = this._hass.states[p + 'this_year_total_usage'];
-      lastPeriodCost = this._hass.states[p + 'last_year_total_cost'];
+      costEntity = this._state('this_year_total_cost');
+      usageEntity = this._state('this_year_total_usage');
+      lastPeriodCost = this._state('last_year_total_cost');
     } else if (isLastYear) {
-      costEntity = this._hass.states[p + 'last_year_total_cost'];
-      usageEntity = this._hass.states[p + 'last_year_total_usage'];
-      lastPeriodCost = this._hass.states[p + 'this_year_total_cost'];
+      costEntity = this._state('last_year_total_cost');
+      usageEntity = this._state('last_year_total_usage');
+      lastPeriodCost = this._state('this_year_total_cost');
     } else if (isViewingPast) {
       // 历史月份：统一从集成生成的每日电费 JSON 取数。
       // 先清空日历，避免上一月数据残留（v42 的主要故障现象）。
@@ -551,14 +661,22 @@ const CSGPowerCard = class extends HTMLElement {
       return;
     } else {
       // 当前月份 - 使用本月实体
-      costEntity = this._hass.states[p + 'this_month_total_cost'];
-      usageEntity = this._hass.states[p + 'this_month_total_usage'];
-      lastPeriodCost = this._hass.states[p + 'last_month_total_cost'];
+      costEntity = this._state('this_month_total_cost');
+      usageEntity = this._state('this_month_total_usage');
+      lastPeriodCost = this._state('last_month_total_cost');
     }
     
     let totalCost = parseFloat(costEntity?.state) || 0;
     let totalKwh = parseFloat(usageEntity?.state) || 0;
-    
+
+    // v1.5.3：电费实体被改名 / 找不到时，用明细里的真实分摊电费求和
+    if (totalCost === 0 && usageEntity?.attributes) {
+      const ua = usageEntity.attributes;
+      const rows = ua.this_month_by_day || ua.this_year_by_month || ua.history_by_month || [];
+      const sum = rows.reduce((acc, d) => acc + (Number(d && d.charge) || 0), 0);
+      if (sum > 0) totalCost = sum;
+    }
+
     // 如果电费为0，根据用电量计算
     if (totalCost === 0 && totalKwh > 0) {
       const tierInfo = this._calcTier(totalKwh, viewMonth);
@@ -586,7 +704,7 @@ const CSGPowerCard = class extends HTMLElement {
       const lastMonthDays = new Date(now.getFullYear(), now.getMonth(), 0).getDate();
       
       // 获取上月用电量
-      const lastMonthEntity = this._hass.states[p + 'last_month_total_usage'];
+      const lastMonthEntity = this._state('last_month_total_usage');
       const lastMonthKwh = parseFloat(lastMonthEntity?.state) || 0;
       
       // 日均电量对比
@@ -845,8 +963,7 @@ const CSGPowerCard = class extends HTMLElement {
       let months = null;
       for (const id of Object.keys(states)) {
         const a = states[id].attributes || {};
-        if (id.indexOf('_this_year_total_usage') >= 0 &&
-            Array.isArray(a.history_by_month)) {
+        if (Array.isArray(a.history_by_month)) {
           months = a.history_by_month;
           break;
         }
