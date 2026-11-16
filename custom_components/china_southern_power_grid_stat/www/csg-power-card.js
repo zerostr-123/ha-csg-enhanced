@@ -8,6 +8,8 @@
  *         年度累计在窄卡片上分两行完整显示。
  * v1.5.3：兼容被改成中文 / 拼音的 entity_id —— 按注册表原名与集成属性
  *         自动定位数据源，卡片配置里的旧 ID 失效时也能自动回退。
+ * v1.6.0：新增皮肤切换（标题栏 🎨 按钮）：默认蓝色 / 浅色卡片 / 自定义图片背景。
+ *         选择存 localStorage，刷新不丢；也支持 YAML 里 skin / skin_image。
  */
 // Same-origin relative URL: works from any HA address, contains no private IP.
 // The HACS build replaces this with /csg_stat/csg_daily_cost.html.
@@ -32,7 +34,7 @@ const CSGPowerCard = class extends HTMLElement {
     // 翻页状态不重置
     this._update();
   }
-  setConfig(config) { this._config = config; }
+  setConfig(config) { this._config = config; if (this._built) this._restoreSkin(); }
   getCardSize() { return this._expanded ? 9 : 4; }
 
   // Account number is derived from the configured entity (or given explicitly),
@@ -148,6 +150,40 @@ const CSGPowerCard = class extends HTMLElement {
     const v = Number(kwh) || 0;
     for (let i = 0; i < t.length; i++) { if (v < t[i]) return i; }
     return t.length;
+  }
+
+  // ---- v1.6.0 皮肤：读写 localStorage + YAML 配置 ----
+  _setSkin(skin, imageData) {
+    const valid = (skin === 'light' || skin === 'image') ? skin : 'default';
+    this.setAttribute('data-skin', valid);
+    try { localStorage.setItem('csg_card_skin', valid); } catch (e) {}
+    if (imageData !== undefined) {
+      try { localStorage.setItem('csg_card_skin_image', imageData); } catch (e) {}
+    }
+    if (valid === 'image') {
+      let url = imageData;
+      if (url === undefined || url === null || url === '') {
+        try { url = localStorage.getItem('csg_card_skin_image') || ''; } catch (e) { url = ''; }
+      }
+      if (!url && this._config && this._config.skin_image) url = this._config.skin_image;
+      if (url) this.style.setProperty('--csg-skin-img', 'url("' + String(url).replace(/"/g, '') + '")');
+    }
+    const pop = this.shadowRoot && this.shadowRoot.getElementById('skin-pop');
+    if (pop) Array.prototype.forEach.call(pop.querySelectorAll('.skin-item'), (it) => {
+      it.classList.toggle('active', it.getAttribute('data-skin') === valid);
+    });
+  }
+  _restoreSkin() {
+    let saved = '';
+    try { saved = localStorage.getItem('csg_card_skin') || ''; } catch (e) {}
+    const cfg = (this._config && this._config.skin) || '';
+    let skin = saved || cfg || 'default';
+    if (skin !== 'light' && skin !== 'image') skin = 'default';
+    let img = '';
+    try { img = localStorage.getItem('csg_card_skin_image') || ''; } catch (e) {}
+    if (!img && this._config && this._config.skin_image) img = this._config.skin_image;
+    if (skin === 'image' && !img) skin = 'default';
+    this._setSkin(skin, img || undefined);
   }
 
   _build() {
@@ -318,6 +354,113 @@ const CSGPowerCard = class extends HTMLElement {
           cursor:pointer;font-family:inherit;white-space:nowrap;transition:background .2s,transform .2s}
         .detail-btn:hover{background:rgba(255,255,255,.28);transform:translateY(-1px)}
         .detail-btn:active{transform:translateY(0)}
+
+        /* ================= v1.6.0 皮肤系统 ================= */
+        .skin-btn{font-size:var(--f16);color:rgba(255,255,255,.7);cursor:pointer;
+          padding:var(--g4) min(6px,calc(var(--csg-w)*.015));border-radius:999px;
+          border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);
+          flex:0 0 auto;position:relative;z-index:3;line-height:1;
+          transition:background .2s,transform .2s;user-select:none}
+        .skin-btn:hover{background:rgba(255,255,255,.22);transform:scale(1.06)}
+        .skin-pop{position:absolute;right:var(--p);top:calc(var(--p) + var(--f28) + var(--g8));
+          z-index:40;min-width:min(220px,calc(var(--csg-w)*.62));
+          background:rgba(20,26,74,.97);border:1px solid rgba(255,255,255,.18);
+          border-radius:var(--rad3);padding:var(--g8);box-shadow:0 12px 32px rgba(0,0,0,.35);
+          display:none;color:#fff;font-family:-apple-system,'PingFang SC',sans-serif}
+        .skin-pop.open{display:block}
+        .skin-pop-title{font-size:var(--f11);color:rgba(255,255,255,.55);margin:2px 2px var(--g8)}
+        .skin-item{display:flex;align-items:center;gap:var(--g8);padding:var(--g8);
+          border-radius:var(--rad4);cursor:pointer;font-size:var(--f12);
+          color:rgba(255,255,255,.88);transition:background .15s}
+        .skin-item:hover{background:rgba(255,255,255,.12)}
+        .skin-item.active{background:rgba(105,240,174,.16);color:#8ff0bd;font-weight:600}
+        .skin-item .sw{width:18px;height:18px;border-radius:6px;flex:0 0 auto;
+          border:1px solid rgba(255,255,255,.3)}
+        .sw-blue{background:linear-gradient(135deg,#1a237e,#283593)}
+        .sw-light{background:linear-gradient(135deg,#eaf6f1,#eef2fb 60%,#f5eefb)}
+        .sw-image{background:linear-gradient(135deg,#3a6ea5,#c06f8a)}
+        .skin-item .tick{margin-left:auto;font-size:var(--f11);opacity:0}
+        .skin-item.active .tick{opacity:1}
+        .skin-file{display:none}
+        .skin-tip{font-size:var(--f9);color:rgba(255,255,255,.42);
+          padding:var(--g4) 2px 0;line-height:1.45}
+
+        :host([data-skin="light"]) .card{
+          background:linear-gradient(115deg,#eaf7f1 0%,#eaf0fc 45%,#f2ecfb 100%)!important;
+          box-shadow:0 6px 24px rgba(31,45,89,.10)}
+        :host([data-skin="light"]) .collapsed-content,
+        :host([data-skin="light"]) .header,
+        :host([data-skin="light"]) .main,
+        :host([data-skin="light"]) .footer{color:#243044}
+        :host([data-skin="light"]) .header::before{background:rgba(16,185,129,.13)}
+        :host([data-skin="light"]) .header::after{background:rgba(139,92,246,.13)}
+        :host([data-skin="light"]) .title-text{color:#1f2a3d;opacity:1}
+        :host([data-skin="light"]) .subtitle{color:#64748b;opacity:1}
+        :host([data-skin="light"]) .collapsed-value{color:#1f2a3d}
+        :host([data-skin="light"]) .collapsed-label{color:#64748b}
+        :host([data-skin="light"]) .collapsed-icon{color:#7c8aa0}
+        :host([data-skin="light"]) .collapse-btn{color:#64748b}
+        :host([data-skin="light"]) .collapse-btn:hover{color:#1f2a3d}
+        :host([data-skin="light"]) .skin-btn{color:#64748b;background:rgba(31,45,89,.06);border-color:rgba(31,45,89,.14)}
+        :host([data-skin="light"]) .skin-btn:hover{background:rgba(31,45,89,.14)}
+        :host([data-skin="light"]) .page-btn{background:rgba(255,255,255,.85);
+          border:1px solid rgba(31,45,89,.10);color:#334155}
+        :host([data-skin="light"]) .page-btn:hover{background:#fff}
+        :host([data-skin="light"]) .page-btn:disabled{opacity:.32}
+        :host([data-skin="light"]) .metric{background:rgba(255,255,255,.82);
+          border-top:3px solid rgba(16,185,129,.85);box-shadow:0 2px 10px rgba(31,45,89,.06)}
+        :host([data-skin="light"]) .metric:nth-child(2){border-top-color:rgba(14,165,233,.85)}
+        :host([data-skin="light"]) .metric:nth-child(3){border-top-color:rgba(139,92,246,.85)}
+        :host([data-skin="light"]) .metric-label{color:#64748b}
+        :host([data-skin="light"]) .metric-value{color:#1f2a3d}
+        :host([data-skin="light"]) .metric-unit{color:#64748b;opacity:1}
+        :host([data-skin="light"]) .compare-row{color:#475569}
+        :host([data-skin="light"]) .compare-tag.up{background:rgba(239,68,68,.14);color:#dc2626}
+        :host([data-skin="light"]) .compare-tag.down{background:rgba(16,185,129,.16);color:#059669}
+        :host([data-skin="light"]) .calendar-area{background:rgba(255,255,255,.82);
+          border:1px solid rgba(31,45,89,.07);box-shadow:0 2px 10px rgba(31,45,89,.05)}
+        :host([data-skin="light"]) .calendar-title{color:#1f2a3d;opacity:1}
+        :host([data-skin="light"]) .weekday{color:#94a3b8}
+        :host([data-skin="light"]) .day-num{color:#7c8aa0}
+        :host([data-skin="light"]) .day-kwh,:host([data-skin="light"]) .day-cost{color:#334155}
+        :host([data-skin="light"]) .day-cell.future{background:rgba(148,163,184,.10);border:1px dashed rgba(100,116,139,.22)}
+        :host([data-skin="light"]) .stat-left,:host([data-skin="light"]) .stat-mid,
+        :host([data-skin="light"]) .stat-right{background:rgba(255,255,255,.82);
+          border:1px solid rgba(31,45,89,.07)}
+        :host([data-skin="light"]) .stat-left{border-top:3px solid rgba(16,185,129,.85)}
+        :host([data-skin="light"]) .stat-mid{border-top:3px solid rgba(14,165,233,.85)}
+        :host([data-skin="light"]) .stat-right{border-top:3px solid rgba(245,158,11,.85)}
+        :host([data-skin="light"]) .tier-header,:host([data-skin="light"]) .stat-mid-title,
+        :host([data-skin="light"]) .peak-title{color:#94a3b8}
+        :host([data-skin="light"]) .tier-current{color:#059669}
+        :host([data-skin="light"]) .tier-info{color:#475569}
+        :host([data-skin="light"]) .tier-info span{color:#94a3b8}
+        :host([data-skin="light"]) .stat-mid-label,:host([data-skin="light"]) .peak-label{color:#94a3b8}
+        :host([data-skin="light"]) .stat-mid-value,:host([data-skin="light"]) .peak-value{color:#1f2a3d}
+        :host([data-skin="light"]) .legend{color:#94a3b8}
+        :host([data-skin="light"]) .legend-ticks{color:#94a3b8}
+        :host([data-skin="light"]) .footer{color:#94a3b8}
+        :host([data-skin="light"]) .detail-btn{background:rgba(255,255,255,.9);
+          border-color:rgba(31,45,89,.14);color:#334155}
+        :host([data-skin="light"]) .detail-btn:hover{background:#fff}
+        :host([data-skin="light"]) .skin-pop{background:rgba(255,255,255,.98);
+          border-color:rgba(31,45,89,.12);color:#243044;box-shadow:0 12px 32px rgba(31,45,89,.18)}
+        :host([data-skin="light"]) .skin-pop-title{color:#94a3b8}
+        :host([data-skin="light"]) .skin-item{color:#334155}
+        :host([data-skin="light"]) .skin-item:hover{background:rgba(31,45,89,.07)}
+        :host([data-skin="light"]) .skin-item.active{background:rgba(16,185,129,.14);color:#059669}
+        :host([data-skin="light"]) .skin-item .sw{border-color:rgba(31,45,89,.16)}
+        :host([data-skin="light"]) .skin-tip{color:#94a3b8}
+
+        :host([data-skin="image"]) .card{
+          background-image:var(--csg-skin-img);
+          background-size:cover;background-position:center;background-repeat:no-repeat;
+          background-color:#1a237e}
+        :host([data-skin="image"]) .card::after{content:'';position:absolute;inset:0;
+          background:rgba(12,16,48,.42);pointer-events:none;z-index:0}
+        :host([data-skin="image"]) .header,:host([data-skin="image"]) .main,
+        :host([data-skin="image"]) .collapsed-content,:host([data-skin="image"]) .footer{z-index:1}
+        :host{position:relative}
       </style>
       
       <div class="card" id="card">
@@ -354,6 +497,7 @@ const CSGPowerCard = class extends HTMLElement {
                   <div class="subtitle" id="period-subtitle">本月用电明细</div>
                 </div>
               </div>
+              <span class="skin-btn" id="skin-btn" title="切换卡片皮肤">🎨</span>
               <span class="collapse-btn" id="collapse-btn">▲</span>
             </div>
           </div>
@@ -474,12 +618,23 @@ const CSGPowerCard = class extends HTMLElement {
           </div>
         </div>
       </div>
+
+      <!-- v1.6.0 皮肤选择面板（放在 .card 外，避免被裁切） -->
+      <div class="skin-pop" id="skin-pop">
+        <div class="skin-pop-title">选择卡片皮肤</div>
+        <div class="skin-item" data-skin="default"><span class="sw sw-blue"></span>默认蓝色<span class="tick">✓</span></div>
+        <div class="skin-item" data-skin="light"><span class="sw sw-light"></span>浅色卡片<span class="tick">✓</span></div>
+        <div class="skin-item" data-skin="image"><span class="sw sw-image"></span>自定义图片背景<span class="tick">✓</span></div>
+        <input type="file" accept="image/*" class="skin-file" id="skin-file">
+        <div class="skin-tip" id="skin-tip">选择后自动记住；图片仅存在本机浏览器</div>
+      </div>
     `;
     
     // 点击卡片切换折叠状态
     this.shadowRoot.getElementById('card').addEventListener('click', (e) => {
       // 翻页按钮、详细信息按钮不切换折叠状态
-      if (e.target.classList.contains('page-btn') || e.target.classList.contains('detail-btn')) return;
+      if (e.target.classList.contains('page-btn') || e.target.classList.contains('detail-btn') ||
+          e.target.classList.contains('skin-btn') || e.target.closest('.skin-pop')) return;
       
       this._expanded = !this._expanded;
       this.shadowRoot.getElementById('card').classList.toggle('expanded', this._expanded);
@@ -499,6 +654,65 @@ const CSGPowerCard = class extends HTMLElement {
       this.shadowRoot.getElementById('card').classList.remove('expanded');
     });
     
+    // ---- v1.6.0 皮肤切换 ----
+    const skinBtn = this.shadowRoot.getElementById('skin-btn');
+    const skinPop = this.shadowRoot.getElementById('skin-pop');
+    skinBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      skinPop.classList.toggle('open');
+    });
+    Array.prototype.forEach.call(skinPop.querySelectorAll('.skin-item'), (item) => {
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const sk = item.getAttribute('data-skin');
+        if (sk === 'image') {
+          this.shadowRoot.getElementById('skin-file').click();
+        } else {
+          this._setSkin(sk);
+          skinPop.classList.remove('open');
+        }
+      });
+    });
+    this.shadowRoot.getElementById('skin-file').addEventListener('change', (e) => {
+      e.stopPropagation();
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const tip = this.shadowRoot.getElementById('skin-tip');
+      if (f.size > 6 * 1024 * 1024) {
+        tip.textContent = '图片太大（>6MB），请换一张小一点的';
+        return;
+      }
+      tip.textContent = '正在处理图片…';
+      const rd = new FileReader();
+      rd.onload = () => {
+        const img = new Image();
+        img.onload = () => {
+          const cv = document.createElement('canvas');
+          const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+          cv.width = Math.max(1, Math.round(img.width * scale));
+          cv.height = Math.max(1, Math.round(img.height * scale));
+          cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+          let data;
+          try { data = cv.toDataURL('image/jpeg', 0.82); }
+          catch (err) { data = String(rd.result); }
+          this._setSkin('image', data);
+          tip.textContent = '图片已应用（已压缩存本机）';
+          skinPop.classList.remove('open');
+        };
+        img.onerror = () => { tip.textContent = '图片读取失败，请换一张'; };
+        img.src = String(rd.result);
+      };
+      rd.onerror = () => { tip.textContent = '图片读取失败，请换一张'; };
+      rd.readAsDataURL(f);
+    });
+    document.addEventListener('click', (e) => {
+      if (!skinPop.classList.contains('open')) return;
+      const path = e.composedPath ? e.composedPath() : [];
+      if (path.indexOf(skinPop) >= 0 || path.indexOf(skinBtn) >= 0) return;
+      skinPop.classList.remove('open');
+    });
+    this._restoreSkin();
+
     // 翻页按钮事件
     this.shadowRoot.getElementById('prev-month').addEventListener('click', () => {
       this._viewMonthOffset--;
